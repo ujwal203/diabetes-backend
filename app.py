@@ -7,59 +7,45 @@ import os
 
 app = FastAPI()
 
-# ================= CORS CONFIGURATION =================
-# Production domains
-PRODUCTION_DOMAINS = [
-    "https://calm-froyo-f2f2db.netlify.app",
-    # Add other production domains if needed
-]
-
-# Development domains
-DEVELOPMENT_DOMAINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000"
-]
-
-# Combine based on environment
-allowed_origins = PRODUCTION_DOMAINS + (DEVELOPMENT_DOMAINS if os.getenv("ENV") == "development" else [])
-
+# 1. CORS Configuration (Production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=[
+        "https://calm-froyo-f2f2db.netlify.app",
+        "http://localhost:3000"  # For local testing
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Manual CORS for preflight requests
+# 2. Manual CORS Headers (Double Protection)
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = ", ".join(allowed_origins)
-    response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers.update({
+        "Access-Control-Allow-Origin": "https://calm-froyo-f2f2db.netlify.app",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
     return response
 
-# Explicit OPTIONS handler
-@app.options("/predict")
+# 3. Explicit OPTIONS Handler
+@app.options("/predict", include_in_schema=False)
 async def options_predict():
     return Response(
         status_code=200,
         headers={
-            "Access-Control-Allow-Origin": ", ".join(allowed_origins),
+            "Access-Control-Allow-Origin": "https://calm-froyo-f2f2db.netlify.app",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
         }
     )
 
-# ================= MODEL LOADING =================
-try:
-    model = joblib.load('diabetes_model.joblib')
-    scaler = joblib.load('scaler.joblib')
-except Exception as e:
-    raise RuntimeError(f"Model loading failed: {str(e)}")
+# Load model
+model = joblib.load('diabetes_model.joblib')
+scaler = joblib.load('scaler.joblib')
 
-# ================= API ENDPOINTS =================
 class PatientData(BaseModel):
     Pregnancies: float
     Glucose: float
@@ -71,26 +57,15 @@ class PatientData(BaseModel):
     Age: float
 
 @app.post("/predict")
-async def predict(data: PatientData, request: Request):
+async def predict(data: PatientData):
     try:
-        # Validate input
-        input_data = data.dict()
-        if any(value < 0 for value in input_data.values()):
-            raise HTTPException(status_code=422, detail="Negative values not allowed")
-        
-        # Convert to DataFrame and scale
-        input_df = pd.DataFrame([input_data])
+        input_df = pd.DataFrame([data.dict()])
         input_scaled = scaler.transform(input_df)
-        
-        # Predict
         prediction = model.predict(input_scaled)
-        
         return {
             "prediction": "Diabetic" if prediction[0] == 1 else "Not Diabetic",
-            "status": "success",
-            "input_data": input_data  # For debugging
+            "status": "success"
         }
-        
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -98,13 +73,6 @@ async def predict(data: PatientData, request: Request):
 async def health_check():
     return {
         "status": "API is healthy",
-        "cors_enabled": True,
-        "allowed_origins": allowed_origins,
-        "model_loaded": model is not None
+        "cors_configured": True,
+        "allowed_origin": "https://calm-froyo-f2f2db.netlify.app"
     }
-
-# ================= STARTUP VALIDATION =================
-@app.on_event("startup")
-async def startup_event():
-    print(f"Allowed origins: {allowed_origins}")
-    print("Model loaded successfully" if model else "Model failed to load")
